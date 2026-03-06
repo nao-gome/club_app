@@ -1,0 +1,14 @@
+# 仮想環境
+venv/
+env/
+
+# 機密情報 (絶対にGitに上げない！)
+.streamlit/secrets.toml
+
+# Pythonのキャッシュ
+__pycache__/
+*.pyc
+
+# テストデータやダウンロードファイル
+*.csv
+*.txt
