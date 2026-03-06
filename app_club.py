@@ -38,12 +38,26 @@ if 'show_billing_data' not in st.session_state:
 # 3. 共通ロジック（年齢・カテゴリ・月会費・半角カナ計算）
 # ==========================================
 def calculate_age_and_category(dob, target_date=None):
+    """
+    日本の学年制度（4/2〜翌4/1）に完全対応したカテゴリ計算。
+    対象年度における「学年基準の年齢」を正確に算出します。
+    """
     if not dob:
         return None, None
     if target_date is None:
-        target_date = date(datetime.now().year, 4, 1)
+        target_date = datetime.now().date()
         
-    age = target_date.year - dob.year - ((target_date.month, target_date.day) < (dob.month, dob.day))
+    # 基準となる「年度」を算出（1〜3月は前年が年度となる）
+    target_fy = target_date.year if target_date.month >= 4 else target_date.year - 1
+    
+    # 選手が生まれた「年度」を算出（早生まれ 1/1〜4/1 は前年度扱い）
+    if dob.month > 4 or (dob.month == 4 and dob.day >= 2):
+        school_year_born = dob.year
+    else:
+        school_year_born = dob.year - 1
+        
+    # 学年基準の年齢（その年度に達する年齢）
+    age = target_fy - school_year_born
     
     if age <= 6: cat = "U-6"
     elif age == 7: cat = "U-7"
@@ -131,9 +145,9 @@ def get_all_data():
 
 parents_data, accounts_data, members_data, billings_data = get_all_data()
 
-# ログイン権限によるタブの制御
+# ログイン権限によるタブの制御 (ダッシュボードを一番右に変更)
 if st.session_state.user_role == 'admin':
-    tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理 (入出力・年度更新)"]
+    tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理 (入出力・年度更新)", "📊 ダッシュボード"]
 else:
     tab_options = ["📋 選手名簿管理"]
 
@@ -262,8 +276,8 @@ if selected_tab == "📋 選手名簿管理":
                 st.warning("⚠️ 手動設定がオンになっています。4月の年度更新時にも金額は自動変更されません。")
                 m_fee = st.number_input("特別月会費 (円)", value=int(current_db_fee), step=100)
             else:
-                st.info(f"💡 現在の登録内容に基づき、月会費 **¥{int(current_db_fee):,}** が適用されています。")
-                m_fee = current_db_fee
+                st.info(f"💡 生年月日と現在のカテゴリ（{calc_cat}）に基づき、規定の月会費 ¥{int(auto_fee):,}が自動適用されています。")
+                m_fee = current_db_fee if not is_new else auto_fee
                 
             st.divider()
 
@@ -368,7 +382,7 @@ if selected_tab == "📋 選手名簿管理":
                             "parent_id": final_p_id, "account_id": final_a_id,
                             "last_name": m_last, "first_name": m_first,
                             "birthdate": str(m_dob) if m_dob else None, "category": calc_cat,
-                            "status": m_status, "base_monthly_fee": m_fee,
+                            "status": m_status, "base_monthly_fee": m_fee if is_custom else get_auto_fee(calc_cat),
                             "is_custom_fee": use_custom_fee,
                             "join_date": str(m_join) if m_join else None, "leave_date": str(m_leave) if m_leave else None
                         }
@@ -388,7 +402,6 @@ if selected_tab == "📋 選手名簿管理":
                     except Exception as e:
                         st.error(f"保存中にエラーが発生しました: {e}")
 
-        # 💡 ここから追加：選手データの完全削除機能（兄弟・孤児チェック付き）
         if not is_new and st.session_state.user_role == 'admin':
             st.markdown("---")
             with st.expander("⚠️ 危険な操作 (選手データの完全削除)"):
@@ -399,17 +412,12 @@ if selected_tab == "📋 選手名簿管理":
                         mem_id = target_member['id']
                         p_id = target_member['parent_id']
                         
-                        # 1. 請求履歴 (billings) の削除（外部キー制約エラー回避のため先に消す）
                         supabase.table("billings").delete().eq("member_id", mem_id).execute()
-                        
-                        # 2. 選手データ (members) の削除
                         supabase.table("members").delete().eq("id", mem_id).execute()
                         
-                        # 3. 兄弟（孤児）チェック: この親に紐づく他の選手がまだいるか？
                         siblings = supabase.table("members").select("id").eq("parent_id", p_id).execute()
                         
                         if len(siblings.data) == 0:
-                            # この親を持つ選手が誰もいなくなった場合、口座と保護者もクリーンアップ
                             supabase.table("bank_accounts").delete().eq("parent_id", p_id).execute()
                             supabase.table("parents").delete().eq("id", p_id).execute()
                             st.info("💡 紐づいていた保護者データと口座データも、他の利用者がいないため同時に削除しました。")
@@ -643,14 +651,15 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
             if st.button("U-18 卒団処理を実行する", type="primary"):
                 today = datetime.now().date()
                 current_sy_year = today.year if today.month >= 4 else today.year - 1
-                target_date_for_grad = date(current_sy_year, 4, 1)
+                
+                target_date_for_grad = date(current_sy_year, 10, 1)
                 grad_count = 0
                 for m in members_data:
                     if m['status'] == '在籍' and m['category'] == 'U-18':
                         dob = datetime.strptime(m['birthdate'], '%Y-%m-%d').date() if m['birthdate'] else None
                         if dob:
                             age_curr, _ = calculate_age_and_category(dob, target_date_for_grad)
-                            if age_curr is not None and age_curr >= 17:
+                            if age_curr is not None and age_curr >= 18:
                                 leave_d = f"{current_sy_year}-12-31"
                                 supabase.table("members").update({"status": "退会", "leave_date": leave_d}).eq("id", m['id']).execute()
                                 grad_count += 1
@@ -660,9 +669,11 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
             st.divider()
             
             st.markdown("#### 🌸 3月末実施: 新年度マスタ一括更新（4/1基準）")
-            update_year = st.number_input("更新対象の年 (例: 2026年4月向けなら「2026」)", value=datetime.now().year, step=1)
+            default_update_year = datetime.now().year if datetime.now().month >= 4 else datetime.now().year - 1
+            update_year = st.number_input("更新対象の年度 (例: 2025年度向けなら「2025」)", value=default_update_year, step=1)
+            
             if st.button(f"{update_year}年度版にマスタを一括更新する", type="primary"):
-                target_date_for_new = date(update_year, 4, 1)
+                target_date_for_new = date(update_year, 10, 1)
                 update_count = 0
                 for m in members_data:
                     if m['status'] == '在籍':
@@ -783,3 +794,55 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
                 st.cache_data.clear()
         except Exception as e:
             st.error("エラーが発生しました。")
+
+# ==========================================
+# 【TAB 5】ダッシュボード (経営分析)
+# ==========================================
+elif selected_tab == "📊 ダッシュボード":
+    st.header("📊 クラブ経営・分析ダッシュボード")
+    
+    if not members_data:
+        st.info("データがありません。「選手名簿管理」から選手を登録してください。")
+    else:
+        df_m = pd.DataFrame(members_data)
+        df_active = df_m[df_m['status'] == '在籍']
+        
+        # 指標の計算
+        total_members = len(df_active)
+        expected_revenue = df_active['base_monthly_fee'].sum() if not df_active.empty else 0
+        
+        df_b = pd.DataFrame(billings_data) if billings_data else pd.DataFrame(columns=['is_paid', 'total_amount'])
+        unpaid_total = 0
+        if not df_b.empty:
+            unpaid_total = df_b[df_b['is_paid'] == False]['total_amount'].sum()
+            
+        # 3つの主要KPI表示
+        col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+        col_kpi1.metric(label="👥 現在の総在籍人数", value=f"{total_members} 名")
+        col_kpi2.metric(label="💰 今月の見込み会費売上", value=f"¥{int(expected_revenue):,}")
+        col_kpi3.metric(label="⚠️ 現在の未収金総額", value=f"¥{int(unpaid_total):,}")
+        
+        st.divider()
+        
+        # グラフ表示
+        if not df_active.empty:
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                st.subheader("📈 カテゴリ別 在籍人数")
+                # カテゴリの順序を定義してソート
+                cat_order = ["U-6", "U-7", "U-8", "U-9", "U-10", "U-11", "U-12", "U-13", "U-14", "U-15", "U-18", "トップ"]
+                df_active['category'] = pd.Categorical(df_active['category'], categories=cat_order, ordered=True)
+                cat_counts = df_active['category'].value_counts().sort_index().reset_index()
+                cat_counts.columns = ['カテゴリ', '人数']
+                # 0人のカテゴリは除外
+                cat_counts = cat_counts[cat_counts['人数'] > 0]
+                st.bar_chart(cat_counts.set_index('カテゴリ'), use_container_width=True)
+                
+            with col_chart2:
+                st.subheader("💴 カテゴリ別 見込み売上構成")
+                cat_sales = df_active.groupby('category', observed=False)['base_monthly_fee'].sum().reset_index()
+                cat_sales.columns = ['カテゴリ', '売上(円)']
+                # 0円のカテゴリは除外
+                cat_sales = cat_sales[cat_sales['売上(円)'] > 0]
+                st.bar_chart(cat_sales.set_index('カテゴリ'), use_container_width=True)
