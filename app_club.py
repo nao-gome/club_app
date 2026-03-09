@@ -33,14 +33,20 @@ if 'selected_member_id' not in st.session_state:
     st.session_state.selected_member_id = None
 if 'show_billing_data' not in st.session_state:
     st.session_state.show_billing_data = False
+    
+# 🌟 手動マッチング（学習）用のポケット
+if 'unmatched_records' not in st.session_state:
+    st.session_state.unmatched_records = []
+if 'last_imported_month' not in st.session_state:
+    st.session_state.last_imported_month = None
 
-# 🌟 Supabaseの認証チケットを保持するためのポケット
+# Supabaseの認証チケットを保持するためのポケット
 if 'access_token' not in st.session_state:
     st.session_state.access_token = None
 if 'refresh_token' not in st.session_state:
     st.session_state.refresh_token = None
 
-# 🌟 ポケットにチケットがあれば、Supabaseに提示して「ログイン済み」であることを証明する
+# ポケットにチケットがあれば、Supabaseに提示して「ログイン済み」であることを証明する
 if st.session_state.access_token and st.session_state.refresh_token:
     try:
         supabase.auth.set_session(st.session_state.access_token, st.session_state.refresh_token)
@@ -48,7 +54,7 @@ if st.session_state.access_token and st.session_state.refresh_token:
         pass # チケットの期限切れ等の場合は無視
 
 # ==========================================
-# 3. 共通ロジック（年齢・カテゴリ・月会費・半角カナ計算）
+# 3. 共通ロジック
 # ==========================================
 def calculate_age_and_category(dob, target_date=None):
     if not dob:
@@ -98,7 +104,7 @@ def pad_num(num, length):
     return str(num).zfill(length)[:length]
 
 # ==========================================
-# 4. ログイン画面（🔒 セキュリティ強化版：Supabase Auth実装）
+# 4. ログイン画面
 # ==========================================
 if not st.session_state.logged_in:
     st.title("⚽ ブリオベッカ浦安 ログイン")
@@ -109,14 +115,10 @@ if not st.session_state.logged_in:
         
         if st.button("ログイン", type="primary"):
             try:
-                # 認証リクエスト
                 auth_response = supabase.auth.sign_in_with_password({"email": login_id, "password": password})
-                
-                # 成功したら発行されるチケットをポケット（Session State）に保存！
                 st.session_state.access_token = auth_response.session.access_token
                 st.session_state.refresh_token = auth_response.session.refresh_token
                 
-                # 役職の取得
                 response = supabase.table("staff_users").select("*").eq("login_id", login_id).execute()
                 users = response.data
                 
@@ -125,7 +127,7 @@ if not st.session_state.logged_in:
                     st.session_state.logged_in = True
                     st.session_state.user_role = user.get('role', 'coach')
                     st.session_state.assigned_category = user.get('assigned_category', '')
-                    st.cache_data.clear() # 空のキャッシュをクリア
+                    st.cache_data.clear()
                     st.success("🔒 セキュアログインに成功しました！")
                     st.rerun()
                 else:
@@ -145,7 +147,7 @@ with col_logout:
     st.write(f"👤 {role_text}")
     if st.button("ログアウト"):
         try:
-            supabase.auth.sign_out() # ログアウト時にチケットを破棄する
+            supabase.auth.sign_out()
         except:
             pass
         st.session_state.logged_in = False
@@ -153,6 +155,7 @@ with col_logout:
         st.session_state.refresh_token = None
         st.session_state.current_view = 'list'
         st.session_state.show_billing_data = False
+        st.session_state.unmatched_records = []
         st.rerun()
 
 st.divider()
@@ -170,7 +173,7 @@ def get_all_data():
 
 parents_data, accounts_data, members_data, billings_data = get_all_data()
 
-# ログイン権限によるタブの制御 (パスワード変更タブを追加)
+# ログイン権限によるタブの制御
 if st.session_state.user_role == 'admin':
     tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理 (入出力・年度更新)", "📊 ダッシュボード", "⚙️ アカウント設定"]
 else:
@@ -569,7 +572,7 @@ elif selected_tab == "💰 請求データ生成 (全銀出力)":
                     )
 
 # ==========================================
-# 【TAB 3】引落結果の取込 (消込)
+# 🌟【TAB 3】引落結果の取込 (消込) ＋ 手動マッチング学習機能
 # ==========================================
 elif selected_tab == "💳 引落結果の取込 (消込)":
     st.header("💳 銀行からの引落結果の取込（自動消込）")
@@ -589,15 +592,21 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
             st.write(f"読み込み件数: **{len(df_data)}件**")
             
             if st.button("🚀 自動消込を実行する", type="primary"):
+                st.session_state.last_imported_month = target_month_import
                 progress_bar = st.progress(0)
                 total_rows = len(df_data)
                 success_count, unpaid_count, error_count = 0, 0, 0
                 df_acc = pd.DataFrame(accounts_data)
                 
+                unmatched_list = [] # 迷子データを溜めるリスト
+                
                 for i, (idx, row) in enumerate(df_data.iterrows()):
                     acc_num = str(row['口座番号']).zfill(7)
                     acc_kana = clean_kana(str(row['口座名義カナ']).strip())
                     result_code = str(row['結果コード']).strip()
+                    b_code = str(row['銀行コード']).zfill(4)
+                    br_code = str(row['支店コード']).zfill(3)
+                    amount_val = row['引落金額']
                     
                     match_acc = df_acc[(df_acc['account_number'] == acc_num) & (df_acc['account_name_kana'] == acc_kana)]
                     if not match_acc.empty:
@@ -613,15 +622,81 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
                                 else: unpaid_count += 1
                             except: error_count += 1
                         else: error_count += 1 
-                    else: error_count += 1 
+                    else:
+                        error_count += 1 
+                        # 🌟 迷子データをリストに追加する
+                        unmatched_list.append({
+                            'bank_code': b_code,
+                            'branch_code': br_code,
+                            'account_number': acc_num,
+                            'account_name_kana': acc_kana,
+                            'result_code': result_code,
+                            'amount': amount_val
+                        })
                     
                     progress_bar.progress(min((i + 1) / total_rows, 1.0))
                 
+                st.session_state.unmatched_records = unmatched_list
                 st.cache_data.clear()
-                st.success(f"🎉 自動消込が完了しました！ (引落成功: {success_count}件 / 残高不足等: {unpaid_count}件 / 突合エラー: {error_count}件)")
+                st.success(f"🎉 自動消込が完了しました！ (引落成功: {success_count}件 / 残高不足等: {unpaid_count}件 / 突合エラー・迷子: {error_count}件)")
 
         except Exception as e:
             st.error(f"ファイルの読み込みに失敗しました。エラー詳細: {e}")
+
+    # 🌟 手動マッチング（学習）UIの表示
+    if st.session_state.unmatched_records:
+        st.divider()
+        st.subheader("⚠️ 手動マッチング (表記ズレの修正・学習)")
+        st.write("システム内の登録とカナ名義などが完全一致しなかったデータです。該当する選手を選んで紐づけると、次回から自動でマッチングされるように学習（データの上書き）します。")
+        
+        # プルダウン用の選択肢を作成
+        member_options = {"選択してください": None}
+        if members_data:
+            for m in members_data:
+                if m['status'] == '在籍':
+                    a = next((acc for acc in accounts_data if acc['id'] == m['account_id']), None)
+                    curr_kana = a['account_name_kana'] if a else "未登録"
+                    label = f"[{m['category']}] {m['last_name']} {m['first_name']} (現在の登録: {curr_kana})"
+                    member_options[label] = m['id']
+
+        for idx, u_rec in enumerate(st.session_state.unmatched_records):
+            with st.expander(f"🔴 迷子データ: {u_rec['account_name_kana']} (口座: {u_rec['account_number']} / 結果コード: {u_rec['result_code']} / 金額: ¥{int(u_rec['amount'])})", expanded=True):
+                col_m1, col_m2 = st.columns([3, 1])
+                with col_m1:
+                    selected_label = st.selectbox("このデータの正しい選手は誰ですか？", options=list(member_options.keys()), key=f"unmatched_sel_{idx}")
+                with col_m2:
+                    st.write("")
+                    if st.button("手動で紐づける", key=f"unmatched_btn_{idx}", type="primary"):
+                        if selected_label == "選択してください":
+                            st.error("選手を選択してください。")
+                        else:
+                            target_member_id = member_options[selected_label]
+                            target_member = next((m for m in members_data if m['id'] == target_member_id), None)
+                            imported_month = st.session_state.get('last_imported_month', target_month_import)
+
+                            if target_member:
+                                is_paid_flag = (u_rec['result_code'] == '0')
+                                try:
+                                    # 1. 今月の消込を完了させる
+                                    supabase.table("billings").update({
+                                        "is_paid": is_paid_flag,
+                                        "zengin_result_code": u_rec['result_code']
+                                    }).eq("member_id", target_member_id).eq("billing_month", imported_month).execute()
+
+                                    # 2. 口座情報を「銀行の正解データ」で上書き学習させる！
+                                    supabase.table("bank_accounts").update({
+                                        "account_name_kana": clean_kana(u_rec['account_name_kana']),
+                                        "account_number": u_rec['account_number'],
+                                        "bank_code": u_rec['bank_code'],
+                                        "branch_code": u_rec['branch_code']
+                                    }).eq("id", target_member['account_id']).execute()
+
+                                    st.success(f"✅ {target_member['last_name']}選手の口座情報を学習し、消込を完了しました！")
+                                    st.session_state.unmatched_records.pop(idx)
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"エラーが発生しました: {e}")
 
     st.divider()
     st.subheader("📋 消込結果・請求履歴の確認")
@@ -873,7 +948,7 @@ elif selected_tab == "📊 ダッシュボード":
                 st.bar_chart(cat_sales.set_index('カテゴリ'), use_container_width=True)
 
 # ==========================================
-# 🌟【TAB 6】アカウント設定 (パスワード変更)
+# 【TAB 6】アカウント設定 (パスワード変更)
 # ==========================================
 elif selected_tab == "⚙️ アカウント設定":
     st.header("⚙️ アカウント設定")
@@ -895,7 +970,6 @@ elif selected_tab == "⚙️ アカウント設定":
                     st.error("確認用パスワードが一致しません。もう一度入力してください。")
                 else:
                     try:
-                        # Supabase Authにパスワードの上書きをリクエスト
                         response = supabase.auth.update_user({"password": new_password})
                         if response.user:
                             st.success("🎉 パスワードを正常に変更しました！")
