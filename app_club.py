@@ -34,29 +34,35 @@ if 'selected_member_id' not in st.session_state:
 if 'show_billing_data' not in st.session_state:
     st.session_state.show_billing_data = False
 
+# 🌟 Supabaseの認証チケットを保持するためのポケット
+if 'access_token' not in st.session_state:
+    st.session_state.access_token = None
+if 'refresh_token' not in st.session_state:
+    st.session_state.refresh_token = None
+
+# 🌟 ポケットにチケットがあれば、Supabaseに提示して「ログイン済み」であることを証明する
+if st.session_state.access_token and st.session_state.refresh_token:
+    try:
+        supabase.auth.set_session(st.session_state.access_token, st.session_state.refresh_token)
+    except Exception as e:
+        pass # チケットの期限切れ等の場合は無視
+
 # ==========================================
 # 3. 共通ロジック（年齢・カテゴリ・月会費・半角カナ計算）
 # ==========================================
 def calculate_age_and_category(dob, target_date=None):
-    """
-    日本の学年制度（4/2〜翌4/1）に完全対応したカテゴリ計算。
-    対象年度における「学年基準の年齢」を正確に算出します。
-    """
     if not dob:
         return None, None
     if target_date is None:
         target_date = datetime.now().date()
         
-    # 基準となる「年度」を算出（1〜3月は前年が年度となる）
     target_fy = target_date.year if target_date.month >= 4 else target_date.year - 1
     
-    # 選手が生まれた「年度」を算出（早生まれ 1/1〜4/1 は前年度扱い）
     if dob.month > 4 or (dob.month == 4 and dob.day >= 2):
         school_year_born = dob.year
     else:
         school_year_born = dob.year - 1
         
-    # 学年基準の年齢（その年度に達する年齢）
     age = target_fy - school_year_born
     
     if age <= 6: cat = "U-6"
@@ -92,27 +98,40 @@ def pad_num(num, length):
     return str(num).zfill(length)[:length]
 
 # ==========================================
-# 4. ログイン画面
+# 4. ログイン画面（🔒 セキュリティ強化版：Supabase Auth実装）
 # ==========================================
 if not st.session_state.logged_in:
     st.title("⚽ ブリオベッカ浦安 ログイン")
     with st.container():
         st.write("システムを利用するにはログインしてください。")
-        login_id = st.text_input("ログインID")
+        login_id = st.text_input("ログインID (メールアドレス)")
         password = st.text_input("パスワード", type="password")
         
         if st.button("ログイン", type="primary"):
-            response = supabase.table("staff_users").select("*").eq("login_id", login_id).eq("password", password).execute()
-            users = response.data
-            if len(users) > 0:
-                user = users[0]
-                st.session_state.logged_in = True
-                st.session_state.user_role = user['role']
-                st.session_state.assigned_category = user['assigned_category']
-                st.success("ログインしました！")
-                st.rerun()
-            else:
-                st.error("IDまたはパスワードが間違っています。")
+            try:
+                # 認証リクエスト
+                auth_response = supabase.auth.sign_in_with_password({"email": login_id, "password": password})
+                
+                # 成功したら発行されるチケットをポケット（Session State）に保存！
+                st.session_state.access_token = auth_response.session.access_token
+                st.session_state.refresh_token = auth_response.session.refresh_token
+                
+                # 役職の取得
+                response = supabase.table("staff_users").select("*").eq("login_id", login_id).execute()
+                users = response.data
+                
+                if len(users) > 0:
+                    user = users[0]
+                    st.session_state.logged_in = True
+                    st.session_state.user_role = user.get('role', 'coach')
+                    st.session_state.assigned_category = user.get('assigned_category', '')
+                    st.cache_data.clear() # 空のキャッシュをクリア
+                    st.success("🔒 セキュアログインに成功しました！")
+                    st.rerun()
+                else:
+                    st.error("認証には成功しましたが、スタッフ権限（役職）が設定されていません。")
+            except Exception as e:
+                st.error("メールアドレスまたはパスワードが間違っています。")
     st.stop()
 
 # ==========================================
@@ -125,7 +144,13 @@ with col_logout:
     role_text = "管理者" if st.session_state.user_role == 'admin' else f"コーチ ({st.session_state.assigned_category})"
     st.write(f"👤 {role_text}")
     if st.button("ログアウト"):
+        try:
+            supabase.auth.sign_out() # ログアウト時にチケットを破棄する
+        except:
+            pass
         st.session_state.logged_in = False
+        st.session_state.access_token = None
+        st.session_state.refresh_token = None
         st.session_state.current_view = 'list'
         st.session_state.show_billing_data = False
         st.rerun()
@@ -145,11 +170,11 @@ def get_all_data():
 
 parents_data, accounts_data, members_data, billings_data = get_all_data()
 
-# ログイン権限によるタブの制御 (ダッシュボードを一番右に変更)
+# ログイン権限によるタブの制御 (パスワード変更タブを追加)
 if st.session_state.user_role == 'admin':
-    tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理 (入出力・年度更新)", "📊 ダッシュボード"]
+    tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理 (入出力・年度更新)", "📊 ダッシュボード", "⚙️ アカウント設定"]
 else:
-    tab_options = ["📋 選手名簿管理"]
+    tab_options = ["📋 選手名簿管理", "⚙️ アカウント設定"]
 
 if 'active_tab' not in st.session_state or st.session_state.active_tab not in tab_options:
     st.session_state.active_tab = "📋 選手名簿管理"
@@ -846,3 +871,35 @@ elif selected_tab == "📊 ダッシュボード":
                 # 0円のカテゴリは除外
                 cat_sales = cat_sales[cat_sales['売上(円)'] > 0]
                 st.bar_chart(cat_sales.set_index('カテゴリ'), use_container_width=True)
+
+# ==========================================
+# 🌟【TAB 6】アカウント設定 (パスワード変更)
+# ==========================================
+elif selected_tab == "⚙️ アカウント設定":
+    st.header("⚙️ アカウント設定")
+    st.write("ログイン用のパスワードを変更できます。定期的な変更をおすすめします。")
+
+    with st.container():
+        st.info("💡 変更後、次回システムを開く際は新しいパスワードでログインしてください。")
+        
+        with st.form("password_change_form"):
+            new_password = st.text_input("新しいパスワード (6文字以上推奨)", type="password")
+            new_password_confirm = st.text_input("新しいパスワード (確認用)", type="password")
+            
+            submit_btn = st.form_submit_button("パスワードを変更する", type="primary")
+
+            if submit_btn:
+                if len(new_password) < 6:
+                    st.error("パスワードは6文字以上で入力してください。")
+                elif new_password != new_password_confirm:
+                    st.error("確認用パスワードが一致しません。もう一度入力してください。")
+                else:
+                    try:
+                        # Supabase Authにパスワードの上書きをリクエスト
+                        response = supabase.auth.update_user({"password": new_password})
+                        if response.user:
+                            st.success("🎉 パスワードを正常に変更しました！")
+                        else:
+                            st.error("パスワードの変更に失敗しました。")
+                    except Exception as e:
+                        st.error(f"エラーが発生しました: {e}")
