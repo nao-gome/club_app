@@ -372,36 +372,79 @@ if selected_tab == "📋 選手名簿管理":
                     try:
                         if m_leave and m_status == "在籍": m_status = "退会"
 
+                        # ==========================================
+                        # 🌟 新規登録の処理（ここは変更なし）
+                        # ==========================================
                         if is_new:
                             if p_mode == "既存の保護者から選択": final_p_id = parent_options[sel_p_name]
                             else:
-                                new_p = supabase.table("parents").insert({"name": p_name_val, "email": p_email_val, "phone": p_phone_val, "name_2": p_name_val_2, "email_2": p_email_val_2, "phone_2": p_phone_val_2}).execute()
+                                new_p = supabase.table("parents").insert({"name": p_name_val, "email": p_email_val, "phone": p_phone_val, "name_2": p_name_val_2, "email_2": p_email_val_2, "phone_2": p_phone_val_2, "version": 1}).execute()
                                 final_p_id = new_p.data[0]['id']
                                 
                             if a_mode == "既存の口座から選択": final_a_id = acc_options[sel_a_label]
                             else:
-                                new_a = supabase.table("bank_accounts").insert({"parent_id": final_p_id, "bank_code": a_b_code.zfill(4), "branch_code": a_br_code.zfill(3), "account_type": a_type.split(" ")[0], "account_number": a_num.zfill(7), "account_name_kana": clean_kana(a_kana)}).execute()
+                                new_a = supabase.table("bank_accounts").insert({"parent_id": final_p_id, "bank_code": a_b_code.zfill(4), "branch_code": a_br_code.zfill(3), "account_type": a_type.split(" ")[0], "account_number": a_num.zfill(7), "account_name_kana": clean_kana(a_kana), "version": 1}).execute()
                                 final_a_id = new_a.data[0]['id']
-                        else:
-                            supabase.table("parents").update({"name": p_name_val, "email": p_email_val, "phone": p_phone_val, "name_2": p_name_val_2, "email_2": p_email_val_2, "phone_2": p_phone_val_2}).eq("id", target_parent['id']).execute()
-                            supabase.table("bank_accounts").update({"bank_code": a_b_code.zfill(4), "branch_code": a_br_code.zfill(3), "account_type": a_type.split(" ")[0], "account_number": a_num.zfill(7), "account_name_kana": clean_kana(a_kana)}).eq("id", target_account['id']).execute()
-                            final_p_id = target_parent['id']
-                            final_a_id = target_account['id']
 
-                        member_payload = {
-                            "parent_id": final_p_id, "account_id": final_a_id,
-                            "last_name": m_last, "first_name": m_first,
-                            "birthdate": str(m_dob) if m_dob else None, "category": calc_cat,
-                            "status": m_status, "base_monthly_fee": m_fee if is_custom else get_auto_fee(calc_cat),
-                            "is_custom_fee": use_custom_fee,
-                            "join_date": str(m_join) if m_join else None, "leave_date": str(m_leave) if m_leave else None
-                        }
-
-                        if is_new:
+                            member_payload = {
+                                "parent_id": final_p_id, "account_id": final_a_id,
+                                "last_name": m_last, "first_name": m_first,
+                                "birthdate": str(m_dob) if m_dob else None, "category": calc_cat,
+                                "status": m_status, "base_monthly_fee": m_fee if is_custom else get_auto_fee(calc_cat),
+                                "is_custom_fee": use_custom_fee,
+                                "join_date": str(m_join) if m_join else None, "leave_date": str(m_leave) if m_leave else None,
+                                "version": 1
+                            }
                             supabase.table("members").insert(member_payload).execute()
                             st.success("新規選手の登録が完了しました！")
+
+                        # ==========================================
+                        # 🌟 既存データの更新処理（★ここに排他制御を追加！）
+                        # ==========================================
                         else:
-                            supabase.table("members").update(member_payload).eq("id", target_member['id']).execute()
+                            # 画面を開いた時のバージョンを取得
+                            p_version = target_parent.get('version', 1)
+                            a_version = target_account.get('version', 1)
+                            m_version = target_member.get('version', 1)
+
+                            # 保護者の更新（バージョンが一致している時だけ更新し、バージョンを+1する）
+                            p_res = supabase.table("parents").update({
+                                "name": p_name_val, "email": p_email_val, "phone": p_phone_val, 
+                                "name_2": p_name_val_2, "email_2": p_email_val_2, "phone_2": p_phone_val_2,
+                                "version": p_version + 1
+                            }).eq("id", target_parent['id']).eq("version", p_version).execute()
+                            
+                            if len(p_res.data) == 0:
+                                st.error("⚠️ 保存失敗：あなたが編集している間に、他のスタッフがこの【保護者情報】を更新しました。一覧に戻って最新データを確認してください。")
+                                st.stop()
+
+                            # 口座の更新
+                            a_res = supabase.table("bank_accounts").update({
+                                "bank_code": a_b_code.zfill(4), "branch_code": a_br_code.zfill(3), 
+                                "account_type": a_type.split(" ")[0], "account_number": a_num.zfill(7), 
+                                "account_name_kana": clean_kana(a_kana),
+                                "version": a_version + 1
+                            }).eq("id", target_account['id']).eq("version", a_version).execute()
+                            
+                            if len(a_res.data) == 0:
+                                st.error("⚠️ 保存失敗：あなたが編集している間に、他のスタッフがこの【口座情報】を更新しました。一覧に戻って最新データを確認してください。")
+                                st.stop()
+
+                            # 選手の更新
+                            member_payload = {
+                                "last_name": m_last, "first_name": m_first,
+                                "birthdate": str(m_dob) if m_dob else None, "category": calc_cat,
+                                "status": m_status, "base_monthly_fee": m_fee if is_custom else get_auto_fee(calc_cat),
+                                "is_custom_fee": use_custom_fee,
+                                "join_date": str(m_join) if m_join else None, "leave_date": str(m_leave) if m_leave else None,
+                                "version": m_version + 1
+                            }
+                            m_res = supabase.table("members").update(member_payload).eq("id", target_member['id']).eq("version", m_version).execute()
+                            
+                            if len(m_res.data) == 0:
+                                st.error("⚠️ 保存失敗：あなたが編集している間に、他のスタッフがこの【選手情報】を更新しました。一覧に戻って最新データを確認してください。")
+                                st.stop()
+
                             st.success("選手情報の更新が完了しました！")
                         
                         st.cache_data.clear()
