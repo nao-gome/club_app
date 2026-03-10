@@ -40,7 +40,7 @@ if 'unmatched_records' not in st.session_state:
 if 'last_imported_month' not in st.session_state:
     st.session_state.last_imported_month = None
 
-# Supabaseの認証チケットを保持するためのポケット
+# Supabaseの認証チケット
 if 'access_token' not in st.session_state:
     st.session_state.access_token = None
 if 'refresh_token' not in st.session_state:
@@ -56,17 +56,12 @@ if st.session_state.access_token and st.session_state.refresh_token:
 # 3. 共通ロジック
 # ==========================================
 def calculate_age_and_category(dob, target_date=None):
-    if not dob:
-        return None, None
-    if target_date is None:
-        target_date = datetime.now().date()
-        
+    if not dob: return None, None
+    if target_date is None: target_date = datetime.now().date()
     target_fy = target_date.year if target_date.month >= 4 else target_date.year - 1
     
-    if dob.month > 4 or (dob.month == 4 and dob.day >= 2):
-        school_year_born = dob.year
-    else:
-        school_year_born = dob.year - 1
+    if dob.month > 4 or (dob.month == 4 and dob.day >= 2): school_year_born = dob.year
+    else: school_year_born = dob.year - 1
         
     age = target_fy - school_year_born
     
@@ -96,11 +91,8 @@ def clean_kana(text):
     half = jaconv.z2h(kata, kana=True, digit=True, ascii=True).upper()
     return half
 
-def pad_str(text, length):
-    return clean_kana(text).ljust(length, ' ')[:length]
-
-def pad_num(num, length):
-    return str(num).zfill(length)[:length]
+def pad_str(text, length): return clean_kana(text).ljust(length, ' ')[:length]
+def pad_num(num, length): return str(num).zfill(length)[:length]
 
 # ==========================================
 # 4. ログイン画面
@@ -129,8 +121,7 @@ if not st.session_state.logged_in:
                     st.cache_data.clear()
                     st.success("🔒 セキュアログインに成功しました！")
                     st.rerun()
-                else:
-                    st.error("認証には成功しましたが、スタッフ権限（役職）が設定されていません。")
+                else: st.error("認証には成功しましたが、スタッフ権限（役職）が設定されていません。")
             except Exception as e:
                 st.error("メールアドレスまたはパスワードが間違っています。")
     st.stop()
@@ -139,42 +130,33 @@ if not st.session_state.logged_in:
 # 5. ヘッダー
 # ==========================================
 col_title, col_logout = st.columns([8, 2])
-with col_title:
-    st.title("⚽ ブリオベッカ浦安市川 会員・会費管理")
+with col_title: st.title("⚽ ブリオベッカ浦安市川 会員管理 (高可用モデル)")
 with col_logout:
     role_text = "管理者" if st.session_state.user_role == 'admin' else f"コーチ ({st.session_state.assigned_category})"
     st.write(f"👤 {role_text}")
     if st.button("ログアウト"):
-        try:
-            supabase.auth.sign_out()
-        except:
-            pass
-        st.session_state.logged_in = False
-        st.session_state.access_token = None
-        st.session_state.refresh_token = None
-        st.session_state.current_view = 'list'
-        st.session_state.show_billing_data = False
-        st.session_state.unmatched_records = []
+        try: supabase.auth.sign_out()
+        except: pass
+        st.session_state.clear()
         st.rerun()
 
 st.divider()
 
 # ==========================================
-# データ取得
+# データ取得 (★論理削除されたものは除外し、履歴は残す)
 # ==========================================
 @st.cache_data(ttl=10)
 def get_all_data():
-    p_res = supabase.table("parents").select("*").execute()
-    a_res = supabase.table("bank_accounts").select("*").execute()
-    m_res = supabase.table("members").select("*").order("created_at", desc=True).execute()
+    p_res = supabase.table("parents").select("*").neq("is_deleted", True).execute()
+    a_res = supabase.table("bank_accounts").select("*").neq("is_deleted", True).execute()
+    m_res = supabase.table("members").select("*").neq("is_deleted", True).order("created_at", desc=True).execute()
     b_res = supabase.table("billings").select("*").execute()
     return p_res.data, a_res.data, m_res.data, b_res.data
 
 parents_data, accounts_data, members_data, billings_data = get_all_data()
 
-# ログイン権限によるタブの制御
 if st.session_state.user_role == 'admin':
-    tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理 (入出力・年度更新)", "📊 ダッシュボード", "⚙️ アカウント設定"]
+    tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理", "📊 ダッシュボード", "⚙️ アカウント設定"]
 else:
     tab_options = ["📋 選手名簿管理", "⚙️ アカウント設定"]
 
@@ -194,8 +176,7 @@ if selected_tab == "📋 選手名簿管理":
         col_filter, col_btn = st.columns([3, 1])
         if st.session_state.user_role == 'coach':
             selected_category = st.session_state.assigned_category
-            with col_filter:
-                st.info(f"あなたの担当カテゴリ（{selected_category}）のみ表示しています。")
+            with col_filter: st.info(f"あなたの担当カテゴリ（{selected_category}）のみ表示しています。")
         else:
             with col_filter:
                 cat_options = ["すべて", "U-6", "U-7", "U-8", "U-9", "U-10", "U-11", "U-12", "U-13", "U-14", "U-15", "U-18", "トップ"]
@@ -215,11 +196,9 @@ if selected_tab == "📋 選手名簿管理":
                 unpaid_sum = df_b[df_b['is_paid'] == False].groupby('member_id')['total_amount'].sum().reset_index()
                 unpaid_sum.columns = ['id', 'unpaid_sum']
                 df_m = pd.merge(df_m, unpaid_sum, on='id', how='left').fillna({'unpaid_sum': 0})
-            else:
-                df_m['unpaid_sum'] = 0
+            else: df_m['unpaid_sum'] = 0
 
-            if selected_category != "すべて":
-                df_m = df_m[df_m['category'] == selected_category]
+            if selected_category != "すべて": df_m = df_m[df_m['category'] == selected_category]
                 
             if not df_m.empty:
                 df_m['選手名'] = df_m['last_name'] + ' ' + df_m['first_name']
@@ -242,25 +221,19 @@ if selected_tab == "📋 選手名簿管理":
                     row_cols[1].write(row['選手名'])
                     row_cols[2].write(row['status'])
                     row_cols[3].write(f"¥{int(row['base_monthly_fee']):,}") 
-                    
                     unpaid_val = int(row['unpaid_sum'])
                     unpaid_text = f"¥{unpaid_val:,}" if unpaid_val > 0 else "¥0"
                     row_cols[4].markdown(f"**<span style='color:red'>{unpaid_text}</span>**" if unpaid_val > 0 else unpaid_text, unsafe_allow_html=True)
-                    
-                    join_str = row['join_date'] if pd.notna(row['join_date']) and row['join_date'] else "-"
-                    leave_str = row['leave_date'] if pd.notna(row['leave_date']) and row['leave_date'] else "-"
-                    row_cols[5].write(join_str)
-                    row_cols[6].write(leave_str)
+                    row_cols[5].write(row['join_date'] if pd.notna(row['join_date']) and row['join_date'] else "-")
+                    row_cols[6].write(row['leave_date'] if pd.notna(row['leave_date']) and row['leave_date'] else "-")
                     
                     if row_cols[7].button("詳細", key=f"btn_detail_{row['id']}", use_container_width=True):
                         st.session_state.selected_member_id = row['id']
                         st.session_state.current_view = 'detail'
                         st.rerun()
                     st.write("") 
-            else:
-                st.info("該当する選手がいません。")
-        else:
-            st.info("登録されている選手がいません。")
+            else: st.info("該当する選手がいません。")
+        else: st.info("登録されている選手がいません。")
 
     elif st.session_state.current_view in ['detail', 'new']:
         is_new = (st.session_state.current_view == 'new')
@@ -299,17 +272,11 @@ if selected_tab == "📋 選手名簿管理":
                 calc_age, calc_cat = calculate_age_and_category(m_dob)
                 
             col_m3, col_m4, col_m5 = st.columns(3)
-            with col_m3:
-                m_status = st.selectbox("ステータス", ["在籍", "休会", "退会", "特待"], index=["在籍", "休会", "退会", "特待"].index(target_member.get('status', '在籍')) if target_member.get('status') else 0)
-            with col_m4:
-                default_join = datetime.strptime(target_member['join_date'], '%Y-%m-%d').date() if target_member.get('join_date') else date.today()
-                m_join = st.date_input("入会日 (請求開始月の判定用)", value=default_join)
-            with col_m5:
-                default_leave = datetime.strptime(target_member['leave_date'], '%Y-%m-%d').date() if target_member.get('leave_date') else None
-                m_leave = st.date_input("休会・退会日 (請求停止月の判定用)", value=default_leave)
+            with col_m3: m_status = st.selectbox("ステータス", ["在籍", "休会", "退会", "特待"], index=["在籍", "休会", "退会", "特待"].index(target_member.get('status', '在籍')) if target_member.get('status') else 0)
+            with col_m4: m_join = st.date_input("入会日 (請求開始月の判定用)", value=datetime.strptime(target_member['join_date'], '%Y-%m-%d').date() if target_member.get('join_date') else date.today())
+            with col_m5: m_leave = st.date_input("休会・退会日 (請求停止月の判定用)", value=datetime.strptime(target_member['leave_date'], '%Y-%m-%d').date() if target_member.get('leave_date') else None)
                 
-            if m_leave and m_status == "在籍":
-                st.warning("⚠️ 退会日が入力されているため、保存時にステータスは自動的に「退会」に更新されます。")
+            if m_leave and m_status == "在籍": st.warning("⚠️ 退会日が入力されているため、保存時にステータスは自動的に「退会」に更新されます。")
                 
             st.markdown("---")
             st.markdown("**💰 月会費の設定**")
@@ -320,7 +287,7 @@ if selected_tab == "📋 選手名簿管理":
             use_custom_fee = st.checkbox("手動で月会費を設定する（兄弟割・特待生など、規定料金以外にする場合のみチェック）", value=is_custom)
             
             if use_custom_fee:
-                st.warning("⚠️ 手動設定がオンになっています。4月の年度更新時にも金額は自動変更されません。")
+                st.warning("⚠️ 手動設定がオンになっています。年度更新時にも金額は自動変更されません。")
                 m_fee = st.number_input("特別月会費 (円)", value=int(current_db_fee), step=100)
             else:
                 st.info(f"💡 生年月日と現在のカテゴリ（{calc_cat}）に基づき、規定の月会費 ¥{int(auto_fee):,}が自動適用されています。")
@@ -400,22 +367,18 @@ if selected_tab == "📋 選手名簿管理":
             submit_btn = st.button("💾 この内容で保存する", type="primary", use_container_width=True)
             
             if submit_btn:
-                if not m_last or not m_first:
-                    st.error("選手の姓名は必須です。")
+                if not m_last or not m_first: st.error("選手の姓名は必須です。")
                 else:
                     try:
-                        if m_leave and m_status == "在籍":
-                            m_status = "退会"
+                        if m_leave and m_status == "在籍": m_status = "退会"
 
                         if is_new:
-                            if p_mode == "既存の保護者から選択":
-                                final_p_id = parent_options[sel_p_name]
+                            if p_mode == "既存の保護者から選択": final_p_id = parent_options[sel_p_name]
                             else:
                                 new_p = supabase.table("parents").insert({"name": p_name_val, "email": p_email_val, "phone": p_phone_val, "name_2": p_name_val_2, "email_2": p_email_val_2, "phone_2": p_phone_val_2}).execute()
                                 final_p_id = new_p.data[0]['id']
                                 
-                            if a_mode == "既存の口座から選択":
-                                final_a_id = acc_options[sel_a_label]
+                            if a_mode == "既存の口座から選択": final_a_id = acc_options[sel_a_label]
                             else:
                                 new_a = supabase.table("bank_accounts").insert({"parent_id": final_p_id, "bank_code": a_b_code.zfill(4), "branch_code": a_br_code.zfill(3), "account_type": a_type.split(" ")[0], "account_number": a_num.zfill(7), "account_name_kana": clean_kana(a_kana)}).execute()
                                 final_a_id = new_a.data[0]['id']
@@ -439,88 +402,66 @@ if selected_tab == "📋 選手名簿管理":
                             st.success("新規選手の登録が完了しました！")
                         else:
                             supabase.table("members").update(member_payload).eq("id", target_member['id']).execute()
-                            st.success("選手情報（および保護者・口座情報）の更新が完了しました！")
+                            st.success("選手情報の更新が完了しました！")
                         
                         st.cache_data.clear()
                         st.session_state.current_view = 'list'
                         st.session_state.selected_member_id = None
                         st.rerun()
                         
-                    except Exception as e:
-                        st.error(f"保存中にエラーが発生しました: {e}")
+                    except Exception as e: st.error(f"保存中にエラーが発生しました: {e}")
 
         if not is_new and st.session_state.user_role == 'admin':
             st.divider()
             st.subheader(f"💸 未払い残高: ¥{current_unpaid_total:,}")
             with st.expander("➕ 過去の未払いデータ・調整データの手動追加", expanded=False):
-                st.write("システム移行前の未払い残高や、突発的な未入金データなどを手動で追加できます。（※ここで追加したデータは、次回の全銀ファイル生成時に「未落ち繰越額」として自動合算されます）")
-                
+                st.write("システム移行前の未払い残高などを手動で追加できます。（次回の全銀ファイル生成時に合算されます）")
                 with st.form("add_unpaid_form"):
                     col_u1, col_u2 = st.columns(2)
-                    with col_u1:
-                        new_unpaid_month = st.text_input("請求年月（名目）", value="移行前未払い")
-                    with col_u2:
-                        new_unpaid_amount = st.number_input("金額 (円)", value=0, step=100)
+                    with col_u1: new_unpaid_month = st.text_input("請求年月（名目）", value="移行前未払い")
+                    with col_u2: new_unpaid_amount = st.number_input("金額 (円)", value=0, step=100)
                         
                     if st.form_submit_button("未払いデータを追加する", type="primary"):
                         if new_unpaid_amount > 0:
                             try:
-                                payload = {
-                                    "member_id": target_member['id'],
-                                    "billing_month": new_unpaid_month,
-                                    "base_amount": 0,
-                                    "carryover_amount": 0,
-                                    "total_amount": new_unpaid_amount,
-                                    "is_paid": False
-                                }
-                                supabase.table("billings").insert(payload).execute()
+                                supabase.table("billings").insert({"member_id": target_member['id'], "billing_month": new_unpaid_month, "base_amount": 0, "carryover_amount": 0, "total_amount": new_unpaid_amount, "is_paid": False}).execute()
                                 st.success("未払いデータを追加しました！")
                                 st.cache_data.clear()
                                 st.rerun()
-                            except Exception as e:
-                                st.error(f"追加エラー: {e}")
-                        else:
-                            st.warning("1円以上の金額を入力してください。")
+                            except Exception as e: st.error(f"追加エラー: {e}")
+                        else: st.warning("1円以上の金額を入力してください。")
             
             if unpaid_records:
-                st.write("【現在の未払い明細】")
                 df_u = pd.DataFrame(unpaid_records)[['billing_month', 'total_amount']]
                 df_u.columns = ['請求年月（名目）', '金額']
                 st.dataframe(df_u, use_container_width=True)
 
             st.markdown("---")
-            with st.expander("⚠️ 危険な操作 (選手データの完全削除)"):
-                st.write("この選手データをシステムから完全に削除します。過去の請求履歴も消去されます。（※退会扱いにしたい場合は、上のステータスを「退会」にして保存してください）")
-                
-                if st.button("🗑️ この選手を完全に削除する", type="primary"):
+            with st.expander("⚠️ 危険な操作 (選手データの論理削除)"):
+                st.write("この選手データを名簿から見えなくします。（※過去の請求履歴の整合性を保つため、データはデータベース内に保存され続けます）")
+                # ★物理削除（DELETE）から論理削除（is_deleted = True）に変更
+                if st.button("🗑️ この選手を削除（退会・不可視化）する", type="primary"):
                     try:
                         mem_id = target_member['id']
-                        p_id = target_member['parent_id']
+                        supabase.table("members").update({
+                            "is_deleted": True,
+                            "status": "退会", 
+                            "leave_date": str(date.today())
+                        }).eq("id", mem_id).execute()
                         
-                        supabase.table("billings").delete().eq("member_id", mem_id).execute()
-                        supabase.table("members").delete().eq("id", mem_id).execute()
-                        
-                        siblings = supabase.table("members").select("id").eq("parent_id", p_id).execute()
-                        
-                        if len(siblings.data) == 0:
-                            supabase.table("bank_accounts").delete().eq("parent_id", p_id).execute()
-                            supabase.table("parents").delete().eq("id", p_id).execute()
-                            st.info("💡 紐づいていた保護者データと口座データも、他の利用者がいないため同時に削除しました。")
-                            
-                        st.success("選手の削除が完了しました。")
+                        st.success("選手データを安全に論理削除しました。")
                         st.cache_data.clear()
                         st.session_state.current_view = 'list'
                         st.session_state.selected_member_id = None
                         st.rerun()
                     except Exception as e:
                         st.error(f"削除中にエラーが発生しました: {e}")
-
 # ==========================================
-# 【TAB 2】請求データ生成 (全銀出力)
+# 🌟【TAB 2】請求データ生成 (トランザクション処理対応版)
 # ==========================================
 elif selected_tab == "💰 請求データ生成 (全銀出力)":
-    st.header("💰 請求データの生成（全銀ファイル出力）")
-    st.write("在籍者、および退会・休会中だが未払いがある選手を自動計算し、今月分の請求データを作成します。")
+    st.header("💰 請求データの生成（トランザクション処理）")
+    st.write("データベース側で安全に一括計算を行い、その『スナップショット』を元に銀行用のファイルを出力します。")
     
     with st.expander("🏦 クラブ（委託者）の口座設定", expanded=False):
         col_c1, col_c2 = st.columns(2)
@@ -537,104 +478,63 @@ elif selected_tab == "💰 請求データ生成 (全銀出力)":
     st.divider()
     target_month = st.text_input("作成する請求年月", value=datetime.now().strftime("%Y-%m"))
     
-    if st.button("🔍 今月の請求データを計算・作成する", type="primary"):
-        st.session_state.show_billing_data = True
+    if st.button("🚀 今月の請求データをデータベースに確定する (一括処理)", type="primary"):
+        with st.spinner("データベース内でトランザクション処理を実行中..."):
+            try:
+                # データベースの関数（RPC）を呼び出して一括計算・確定（ロールバック保証）
+                supabase.rpc('generate_monthly_billings', {'target_month': target_month}).execute()
+                st.success(f"🎉 {target_month} の請求データが安全にデータベースに作成・確定されました！")
+                st.session_state.show_billing_data = True
+                st.cache_data.clear() # 最新のデータを再取得
+            except Exception as e:
+                st.error(f"処理中にエラーが発生し、安全にロールバック（キャンセル）されました。詳細: {e}")
         
     if st.session_state.show_billing_data:
-        if not members_data or not accounts_data:
-            st.warning("データがありません。")
+        df_b = pd.DataFrame(get_all_data()[3]) # 最新の請求データを取得
+        if not df_b.empty:
+            df_target = df_b[(df_b['billing_month'] == target_month) & (df_b['total_amount'] > 0)].copy()
         else:
-            df_members = pd.DataFrame(members_data)
-            df_accounts = pd.DataFrame(accounts_data)
-            df_billings = pd.DataFrame(billings_data) if billings_data else pd.DataFrame(columns=['member_id', 'is_paid', 'total_amount', 'billing_month'])
+            df_target = pd.DataFrame()
             
-            if not df_billings.empty:
-                unpaid_records = df_billings[(df_billings['is_paid'] == False) & (df_billings['billing_month'] != target_month)]
-                unpaid_sum = unpaid_records.groupby('member_id')['total_amount'].sum().reset_index()
-                unpaid_sum.columns = ['member_id', 'carryover_amount']
-            else:
-                unpaid_sum = pd.DataFrame(columns=['member_id', 'carryover_amount'])
+        if df_target.empty:
+            st.info("請求対象のデータがありません。")
+        else:
+            df_m = pd.DataFrame(members_data)[['id', 'last_name', 'first_name', 'category']]
+            df_target = pd.merge(df_target, df_m, left_on='member_id', right_on='id', how='left')
+            df_target['選手名'] = df_target['last_name'] + ' ' + df_target['first_name']
             
-            df_merge = pd.merge(df_members, df_accounts, left_on='account_id', right_on='id', suffixes=('_m', '_a'))
-            df_all = pd.merge(df_merge, unpaid_sum, left_on='id_m', right_on='member_id', how='left').fillna({'carryover_amount': 0})
+            st.write(f"### 対象者: {len(df_target)}名 / 今回の総請求額: ¥{int(df_target['total_amount'].sum()):,}")
             
-            target_mask = (df_all['status'] == '在籍') | (df_all['carryover_amount'] > 0)
-            df_target = df_all[target_mask].copy()
+            # 画面表示用の整形
+            display_df = df_target[['選手名', 'category', 'base_amount', 'carryover_amount', 'total_amount', 'snapshot_account_name_kana']].copy()
+            display_df.columns = ['選手名', 'カテゴリ', '当月基本額', '未落ち繰越額', '今回請求額', '口座名義カナ(スナップショット)']
+            st.dataframe(display_df, use_container_width=True)
             
-            if df_target.empty:
-                st.info("請求対象の選手がいません。")
-            else:
-                df_target['選手名'] = df_target['last_name'] + ' ' + df_target['first_name']
-                billing_records_to_insert = []
-                display_data = []
-                total_claim_amount = 0
-                
-                for idx, row in df_target.iterrows():
-                    m_id = row['id_m']
-                    base_fee = int(row['base_monthly_fee']) if row['status'] == '在籍' else 0
-                    current_cat = row['category']
-                    carryover = int(row['carryover_amount'])
-                    total_fee = base_fee + carryover
-                    
-                    total_claim_amount += total_fee
-                    
-                    display_data.append({
-                        '選手名': row['選手名'],
-                        'ステータス': row['status'],
-                        '請求カテゴリ': f"{current_cat} {'(手動)' if row.get('is_custom_fee', False) else ''}",
-                        '当月基本額': base_fee,
-                        '未落ち繰越額': carryover,
-                        '今回請求額': total_fee,
-                        '口座名義カナ': row['account_name_kana']
-                    })
-                    
-                    billing_records_to_insert.append({
-                        "member_id": m_id, "billing_month": target_month,
-                        "base_amount": base_fee, "carryover_amount": carryover,
-                        "total_amount": total_fee, "is_paid": False
-                    })
-                
-                df_display = pd.DataFrame(display_data)
-                
-                st.write(f"### 対象者: {len(df_display)}名 / 今回の総請求額: ¥{total_claim_amount:,}")
-                st.dataframe(df_display, use_container_width=True)
-                
-                zengin_lines = []
-                header = "1" + "91" + "0" + pad_str(club_code, 10) + pad_str(club_name, 40) + pad_num(withdraw_date, 4) + pad_num(club_bank_code, 4) + pad_str("", 15) + pad_num(club_branch_code, 3) + pad_str("", 15) + pad_num(club_acc_type.split(" ")[0], 1) + pad_num(club_acc_num, 7) + pad_str("", 17)
-                zengin_lines.append(header)
-                
-                for idx, row in df_target.iterrows():
-                    total_fee = next(item['今回請求額'] for item in display_data if item['選手名'] == row['選手名'])
-                    record = "2" + pad_num(row['bank_code'], 4) + pad_str("", 15) + pad_num(row['branch_code'], 3) + pad_str("", 15) + pad_str("", 4) + pad_num(row['account_type'], 1) + pad_num(row['account_number'], 7) + pad_str(row['account_name_kana'], 30) + pad_num(total_fee, 10) + "0" + pad_str(str(row['id_m']).replace("-", "")[:20], 20) + "0" + pad_str("", 8)
-                    zengin_lines.append(record)
-                
-                trailer = "8" + pad_num(len(df_target), 6) + pad_num(total_claim_amount, 12) + pad_num(0, 6) + pad_num(0, 12) + pad_num(0, 6) + pad_num(0, 12) + pad_str("", 65)
-                zengin_lines.append(trailer)
-                zengin_lines.append("9" + pad_str("", 119))
-                zengin_text = "\r\n".join(zengin_lines)
-                
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    st.info("💡 ダウンロードと同時に、今回の請求履歴がデータベースに保存されます。（すでに保存済みの場合は上書きされます）")
-                with col_d2:
-                    file_name = f"zengin_billing_{target_month}.txt"
-                    def save_billings_to_db():
-                        try:
-                            supabase.table("billings").delete().eq("billing_month", target_month).execute()
-                            supabase.table("billings").insert(billing_records_to_insert).execute()
-                            st.cache_data.clear()
-                        except Exception as e:
-                            st.error(f"DB保存エラー: {e}")
-
-                    st.download_button(
-                        label=f"📥 銀行アップロード用ファイル（{file_name}）をダウンロード",
-                        data=zengin_text.encode('shift_jis', errors='replace'),
-                        file_name=file_name, mime="text/plain",
-                        on_click=save_billings_to_db, type="primary"
-                    )
+            # 全銀ファイルの作成（マスタではなく、DBに保存されたスナップショット情報から生成する）
+            zengin_lines = []
+            header = "1" + "91" + "0" + pad_str(club_code, 10) + pad_str(club_name, 40) + pad_num(withdraw_date, 4) + pad_num(club_bank_code, 4) + pad_str("", 15) + pad_num(club_branch_code, 3) + pad_str("", 15) + pad_num(club_acc_type.split(" ")[0], 1) + pad_num(club_acc_num, 7) + pad_str("", 17)
+            zengin_lines.append(header)
+            
+            total_claim_amount = 0
+            for idx, row in df_target.iterrows():
+                total_claim_amount += row['total_amount']
+                record = "2" + pad_num(row['snapshot_bank_code'], 4) + pad_str("", 15) + pad_num(row['snapshot_branch_code'], 3) + pad_str("", 15) + pad_str("", 4) + pad_num(row['snapshot_account_type'], 1) + pad_num(row['snapshot_account_number'], 7) + pad_str(row['snapshot_account_name_kana'], 30) + pad_num(row['total_amount'], 10) + "0" + pad_str(str(row['member_id']).replace("-", "")[:20], 20) + "0" + pad_str("", 8)
+                zengin_lines.append(record)
+            
+            trailer = "8" + pad_num(len(df_target), 6) + pad_num(total_claim_amount, 12) + pad_num(0, 6) + pad_num(0, 12) + pad_num(0, 6) + pad_num(0, 12) + pad_str("", 65)
+            zengin_lines.append(trailer)
+            zengin_lines.append("9" + pad_str("", 119))
+            zengin_text = "\r\n".join(zengin_lines)
+            
+            st.info("💡 請求データはすでにデータベース内に安全に確定されています。以下のボタンから銀行アップロード用のテキストファイルをダウンロードしてください。")
+            st.download_button(
+                label=f"📥 銀行アップロード用ファイル（{target_month}）をダウンロード",
+                data=zengin_text.encode('shift_jis', errors='replace'),
+                file_name=f"zengin_billing_{target_month}.txt", mime="text/plain", type="primary"
+            )
 
 # ==========================================
-# 🌟【TAB 3】引落結果の取込 (消込) ＋ 手動マッチング学習機能 (バグ修正版)
+# 【TAB 3】引落結果の取込 (消込) ＋ 手動マッチング学習機能
 # ==========================================
 elif selected_tab == "💳 引落結果の取込 (消込)":
     st.header("💳 銀行からの引落結果の取込（自動消込）")
@@ -666,9 +566,9 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
                     acc_num = str(row['口座番号']).zfill(7)
                     acc_kana = clean_kana(str(row['口座名義カナ']).strip())
                     result_code = str(row['結果コード']).strip()
+                    amount_val = row['引落金額']
                     b_code = str(row['銀行コード']).zfill(4)
                     br_code = str(row['支店コード']).zfill(3)
-                    amount_val = row['引落金額']
                     
                     match_acc = df_acc[(df_acc['account_number'] == acc_num) & (df_acc['account_name_kana'] == acc_kana)]
                     if not match_acc.empty:
@@ -682,7 +582,7 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
                                 # 対象月のレコードを更新
                                 supabase.table("billings").update({"is_paid": is_paid_flag, "zengin_result_code": result_code}).eq("member_id", member_id).eq("billing_month", target_month_import).execute()
                                 
-                                # 🌟 追加：引落成功時は、過去の未払いレコードもすべて「済」にする！
+                                # 引落成功時は、過去の未払いレコードもすべて「済」にする
                                 if is_paid_flag:
                                     supabase.table("billings").update({"is_paid": True}).eq("member_id", member_id).eq("is_paid", False).execute()
                                     success_count += 1
@@ -692,20 +592,13 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
                         else: error_count += 1 
                     else:
                         error_count += 1 
-                        unmatched_list.append({
-                            'bank_code': b_code,
-                            'branch_code': br_code,
-                            'account_number': acc_num,
-                            'account_name_kana': acc_kana,
-                            'result_code': result_code,
-                            'amount': amount_val
-                        })
+                        unmatched_list.append({'bank_code': b_code, 'branch_code': br_code, 'account_number': acc_num, 'account_name_kana': acc_kana, 'result_code': result_code, 'amount': amount_val})
                     
                     progress_bar.progress(min((i + 1) / total_rows, 1.0))
                 
                 st.session_state.unmatched_records = unmatched_list
                 st.cache_data.clear()
-                st.success(f"🎉 自動消込が完了しました！ (引落成功: {success_count}件 / 残高不足等: {unpaid_count}件 / 突合エラー・迷子: {error_count}件)")
+                st.success(f"🎉 自動消込が完了しました！ (成功: {success_count}件 / 未払等: {unpaid_count}件 / 迷子: {error_count}件)")
 
         except Exception as e:
             st.error(f"ファイルの読み込みに失敗しました。エラー詳細: {e}")
@@ -713,7 +606,7 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
     if st.session_state.unmatched_records:
         st.divider()
         st.subheader("⚠️ 手動マッチング (表記ズレの修正・学習)")
-        st.write("システム内の登録とカナ名義などが完全一致しなかったデータです。該当する選手を選んで紐づけると、次回から自動でマッチングされるように学習（データの上書き）します。")
+        st.write("システム内の登録とカナ名義などが完全一致しなかったデータです。紐づけると次回から自動でマッチングされるように学習します。")
         
         member_options = {"選択してください": None}
         if members_data:
@@ -724,7 +617,7 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
                 member_options[label] = m['id']
 
         for idx, u_rec in enumerate(st.session_state.unmatched_records):
-            with st.expander(f"🔴 迷子データ: {u_rec['account_name_kana']} (口座: {u_rec['account_number']} / 結果コード: {u_rec['result_code']} / 金額: ¥{int(u_rec['amount'])})", expanded=True):
+            with st.expander(f"🔴 迷子データ: {u_rec['account_name_kana']} (口座: {u_rec['account_number']} / 結果: {u_rec['result_code']} / 金額: ¥{int(u_rec['amount'])})", expanded=True):
                 col_m1, col_m2 = st.columns([3, 1])
                 with col_m1:
                     selected_label = st.selectbox("このデータの正しい選手は誰ですか？", options=list(member_options.keys()), key=f"unmatched_sel_{idx}")
@@ -741,23 +634,12 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
                             if target_member:
                                 is_paid_flag = (u_rec['result_code'] == '0')
                                 try:
-                                    # 今月の消込を完了させる
-                                    supabase.table("billings").update({
-                                        "is_paid": is_paid_flag,
-                                        "zengin_result_code": u_rec['result_code']
-                                    }).eq("member_id", target_member_id).eq("billing_month", imported_month).execute()
-
-                                    # 🌟 追加：引落成功時は、過去の未払いレコードもすべて「済」にする！
+                                    supabase.table("billings").update({"is_paid": is_paid_flag, "zengin_result_code": u_rec['result_code']}).eq("member_id", target_member_id).eq("billing_month", imported_month).execute()
                                     if is_paid_flag:
                                         supabase.table("billings").update({"is_paid": True}).eq("member_id", target_member_id).eq("is_paid", False).execute()
 
                                     # 口座情報を「銀行の正解データ」で上書き学習
-                                    supabase.table("bank_accounts").update({
-                                        "account_name_kana": clean_kana(u_rec['account_name_kana']),
-                                        "account_number": u_rec['account_number'],
-                                        "bank_code": u_rec['bank_code'],
-                                        "branch_code": u_rec['branch_code']
-                                    }).eq("id", target_member['account_id']).execute()
+                                    supabase.table("bank_accounts").update({"account_name_kana": clean_kana(u_rec['account_name_kana']), "account_number": u_rec['account_number'], "bank_code": u_rec['bank_code'], "branch_code": u_rec['branch_code']}).eq("id", target_member['account_id']).execute()
 
                                     st.success(f"✅ {target_member['last_name']}選手の口座情報を学習し、消込を完了しました！")
                                     st.session_state.unmatched_records.pop(idx)
@@ -768,29 +650,22 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
 
     st.divider()
     st.subheader("📋 消込結果・請求履歴の確認")
-    
     if billings_data:
         df_b = pd.DataFrame(billings_data)
         df_m = pd.DataFrame(members_data)[['id', 'last_name', 'first_name', 'category']]
         df_m['選手名'] = df_m['last_name'] + ' ' + df_m['first_name']
         
         df_disp = pd.merge(df_b, df_m, left_on='member_id', right_on='id', how='left')
-        
         month_options = sorted(df_disp['billing_month'].dropna().unique().tolist(), reverse=True)
         
         if month_options:
             col_m, col_s = st.columns(2)
-            with col_m:
-                selected_month = st.selectbox("確認する請求年月", options=month_options)
-            with col_s:
-                status_filter = st.selectbox("抽出条件", options=["すべて", "引落成功 (済)", "引落不能 (未払い・繰越)"])
+            with col_m: selected_month = st.selectbox("確認する請求年月", options=month_options)
+            with col_s: status_filter = st.selectbox("抽出条件", options=["すべて", "引落成功 (済)", "引落不能 (未払い・繰越)"])
                 
             df_filtered = df_disp[df_disp['billing_month'] == selected_month].copy()
-            
-            if status_filter == "引落成功 (済)":
-                df_filtered = df_filtered[df_filtered['is_paid'] == True]
-            elif status_filter == "引落不能 (未払い・繰越)":
-                df_filtered = df_filtered[df_filtered['is_paid'] == False]
+            if status_filter == "引落成功 (済)": df_filtered = df_filtered[df_filtered['is_paid'] == True]
+            elif status_filter == "引落不能 (未払い・繰越)": df_filtered = df_filtered[df_filtered['is_paid'] == False]
                 
             if not df_filtered.empty:
                 st.write(f"該当件数: {len(df_filtered)}件")
@@ -803,12 +678,12 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
             else:
                 st.info("指定した条件に該当するデータがありません。")
     else:
-        st.info("請求履歴データがありません。「請求データ生成」からダウンロードを実行すると履歴が作られます。")
+        st.info("請求履歴データがありません。")
 
 # ==========================================
 # 【TAB 4】システム管理 (入出力・年度更新)
 # ==========================================
-elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
+elif selected_tab == "⚙️ システム管理":
     st.header("⚙️ システム管理・データ入出力")
     
     if st.session_state.user_role == 'admin':
@@ -819,11 +694,11 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
             if st.button("U-18 卒団処理を実行する", type="primary"):
                 today = datetime.now().date()
                 current_sy_year = today.year if today.month >= 4 else today.year - 1
-                
                 target_date_for_grad = date(current_sy_year, 10, 1)
                 grad_count = 0
                 for m in members_data:
-                    if m['status'] == '在籍' and m['category'] == 'U-18':
+                    # 論理削除されていない、かつ在籍中のU-18が対象
+                    if m['status'] == '在籍' and m['category'] == 'U-18' and not m.get('is_deleted', False):
                         dob = datetime.strptime(m['birthdate'], '%Y-%m-%d').date() if m['birthdate'] else None
                         if dob:
                             age_curr, _ = calculate_age_and_category(dob, target_date_for_grad)
@@ -838,13 +713,13 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
             
             st.markdown("#### 🌸 3月末実施: 新年度マスタ一括更新（4/1基準）")
             default_update_year = datetime.now().year if datetime.now().month >= 4 else datetime.now().year - 1
-            update_year = st.number_input("更新対象の年度 (例: 2025年度向けなら「2025」)", value=default_update_year, step=1)
+            update_year = st.number_input("更新対象の年度", value=default_update_year, step=1)
             
             if st.button(f"{update_year}年度版にマスタを一括更新する", type="primary"):
                 target_date_for_new = date(update_year, 10, 1)
                 update_count = 0
                 for m in members_data:
-                    if m['status'] == '在籍':
+                    if m['status'] == '在籍' and not m.get('is_deleted', False):
                         dob = datetime.strptime(m['birthdate'], '%Y-%m-%d').date() if m['birthdate'] else None
                         if dob:
                             _, new_cat = calculate_age_and_category(dob, target_date_for_new)
@@ -854,7 +729,7 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
                                 update_payload["base_monthly_fee"] = int(get_auto_fee(new_cat))
                             supabase.table("members").update(update_payload).eq("id", m['id']).execute()
                             update_count += 1
-                st.success(f"🎉 {update_count}名の選手データを{update_year}年度版の学年・会費に更新しました！")
+                st.success(f"🎉 {update_count}名の選手データを{update_year}年度版に更新しました！")
                 st.cache_data.clear()
         
     st.markdown("---")
@@ -864,6 +739,9 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
         df_m_exp = pd.DataFrame(members_data)
         df_p_exp = pd.DataFrame(parents_data)
         df_a_exp = pd.DataFrame(accounts_data)
+        # 論理削除されていないデータをエクスポート対象とする
+        df_m_exp = df_m_exp[df_m_exp['is_deleted'] != True]
+        
         df_export = pd.merge(df_m_exp, df_p_exp, left_on='parent_id', right_on='id', suffixes=('_member', '_parent'))
         df_export = pd.merge(df_export, df_a_exp, left_on='account_id', right_on='id', suffixes=('', '_account'))
         
@@ -883,7 +761,7 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
 
     st.divider()
 
-    st.subheader("📥 新規データの一括インポート (上書き更新対応)")
+    st.subheader("📥 新規データの一括インポート (300名対応版)")
     st.info("💡 移行時の未収金データを引き継ぐため、CSVに「初期未払額」列がある場合はその金額を未払いとして登録します。")
     uploaded_file = st.file_uploader("CSVファイルを選択してください", type=["csv"])
     if uploaded_file is not None:
@@ -944,7 +822,8 @@ elif selected_tab == "⚙️ システム管理 (入出力・年度更新)":
                             "status": get_val('ステータス') or '在籍', "base_monthly_fee": fee_val,
                             "is_custom_fee": False, 
                             "join_date": pd.to_datetime(join_raw).strftime('%Y-%m-%d') if join_raw else None, 
-                            "leave_date": pd.to_datetime(leave_raw).strftime('%Y-%m-%d') if leave_raw else None
+                            "leave_date": pd.to_datetime(leave_raw).strftime('%Y-%m-%d') if leave_raw else None,
+                            "is_deleted": False # インポート時は削除フラグをオフにする
                         }
                         
                         if existing_m:
@@ -987,9 +866,9 @@ elif selected_tab == "📊 ダッシュボード":
         st.info("データがありません。「選手名簿管理」から選手を登録してください。")
     else:
         df_m = pd.DataFrame(members_data)
-        df_active = df_m[df_m['status'] == '在籍']
+        # 論理削除されていない在籍者だけを計算対象とする
+        df_active = df_m[(df_m['status'] == '在籍') & (df_m['is_deleted'] != True)]
         
-        # 指標の計算
         total_members = len(df_active)
         expected_revenue = df_active['base_monthly_fee'].sum() if not df_active.empty else 0
         
@@ -998,7 +877,6 @@ elif selected_tab == "📊 ダッシュボード":
         if not df_b.empty:
             unpaid_total = df_b[df_b['is_paid'] == False]['total_amount'].sum()
             
-        # 3つの主要KPI表示
         col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
         col_kpi1.metric(label="👥 現在の総在籍人数", value=f"{total_members} 名")
         col_kpi2.metric(label="💰 今月の見込み会費売上", value=f"¥{int(expected_revenue):,}")
@@ -1006,7 +884,6 @@ elif selected_tab == "📊 ダッシュボード":
         
         st.divider()
         
-        # グラフ表示
         if not df_active.empty:
             col_chart1, col_chart2 = st.columns(2)
             
