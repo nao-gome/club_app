@@ -95,11 +95,102 @@ def pad_str(text, length): return clean_kana(text).ljust(length, ' ')[:length]
 def pad_num(num, length): return str(num).zfill(length)[:length]
 
 # ==========================================
-# 4. ログイン画面
+# 4. 入り口（保護者用フォーム ＆ スタッフログイン）
 # ==========================================
 if not st.session_state.logged_in:
-    st.title("⚽ ブリオベッカ浦安市川 ログイン")
-    with st.container():
+    st.title("⚽ ブリオベッカ浦安市川")
+    
+    # 入り口をタブで2つに分ける
+    tab_public, tab_staff = st.tabs(["📝 【保護者用】新規入会申込フォーム", "🔐 スタッフ用ログイン"])
+    
+    # ------------------------------------------
+    # 【保護者用】ログイン不要の入力フォーム
+    # ------------------------------------------
+    with tab_public:
+        st.write("入会をご希望の方は、以下のフォームに必要事項を入力して送信してください。")
+        st.info("💡 送信されたデータは暗号化され、安全にクラブへ送信されます。")
+        
+        with st.form("public_registration_form"):
+            st.subheader("🏃 選手（お子様）の情報")
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                m_last = st.text_input("姓 ※必須", placeholder="例：浦安")
+                m_first = st.text_input("名 ※必須", placeholder="例：太郎")
+            with col_m2:
+                m_dob = st.date_input("生年月日", value=None, min_value=date(1990, 1, 1), max_value=date.today())
+                
+            st.divider()
+            
+            st.subheader("👥 保護者の情報")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                p_name_val = st.text_input("保護者氏名 ※必須", placeholder="例：浦安 一郎")
+            with col_p2:
+                p_email_val = st.text_input("メールアドレス ※必須", placeholder="例：sample@example.com")
+                p_phone_val = st.text_input("電話番号", placeholder="例：090-0000-0000")
+                
+            st.divider()
+            
+            st.subheader("🏦 月会費の引き落とし口座")
+            st.write("※ご不明な場合は、後日スタッフより確認させていただきますので空欄でも構いません。")
+            col_a1, col_a2 = st.columns(2)
+            with col_a1:
+                a_b_code = st.text_input("銀行コード (4桁)", placeholder="例：0001")
+                a_br_code = st.text_input("支店コード (3桁)", placeholder="例：001")
+                a_type = st.selectbox("預金種目", ["1 (普通)", "2 (当座)"])
+            with col_a2:
+                a_num = st.text_input("口座番号 (7桁)", placeholder="例：1234567")
+                a_kana = st.text_input("口座名義カナ", placeholder="例：ウラヤス イチロウ")
+            
+            st.markdown("---")
+            
+            # 🍯 スパム対策（ハニーポット）の罠フィールド
+            st.markdown("<span style='font-size: 0.8em; color: gray;'>※システム確認用（何も入力しないでください）</span>", unsafe_allow_html=True)
+            honeypot = st.text_input("bot_check", label_visibility="collapsed", key="honeypot_field")
+
+            submit_form = st.form_submit_button("✉️ この内容で入会を申し込む", type="primary", use_container_width=True)
+            
+            if submit_form:
+                # 🤖 もし罠フィールドに文字が入っていたら、Botとみなして「偽の成功」を返し、処理を終了する
+                if honeypot != "":
+                    st.success(f"🎉 ありがとうございます！ {m_last} {m_first} 選手の入会申し込みを受け付けました。スタッフからの連絡をお待ちください。")
+                    st.stop()
+
+                if not m_last or not m_first or not p_name_val or not p_email_val:
+                    st.error("⚠️ 必須項目（選手の姓名、保護者の氏名・メールアドレス）を入力してください。")
+                else:
+                    try:
+                        # 生年月日からカテゴリと月会費を事前計算
+                        _, calc_cat = calculate_age_and_category(m_dob)
+                        
+                        # データベースの関数(RPC)に渡す荷物（ペイロード）を作成
+                        payload = {
+                            "p_name": p_name_val, 
+                            "p_email": p_email_val, 
+                            "p_phone": p_phone_val,
+                            "a_bank_code": a_b_code.zfill(4) if a_b_code else "0000", 
+                            "a_branch_code": a_br_code.zfill(3) if a_br_code else "000", 
+                            "a_type": a_type.split(" ")[0] if a_type else "1", 
+                            "a_acc_num": a_num.zfill(7) if a_num else "0000000", 
+                            "a_kana": clean_kana(a_kana),
+                            "m_last": m_last, 
+                            "m_first": m_first,
+                            "m_dob": str(m_dob) if m_dob else None, 
+                            "m_category": calc_cat,
+                            "m_fee": get_auto_fee(calc_cat)
+                        }
+                        
+                        # RPC関数を一発で呼び出す！
+                        supabase.rpc("submit_public_application", payload).execute()
+                        
+                        st.success(f"🎉 ありがとうございます！ {m_last} {m_first} 選手の入会申し込みを受け付けました。スタッフからの連絡をお待ちください。")
+                        
+                    except Exception as e:
+                        st.error(f"データベースエラー詳細: {e}")
+    # ------------------------------------------
+    # 【スタッフ用】ログイン画面
+    # ------------------------------------------
+    with tab_staff:
         st.write("システムを利用するにはログインしてください。")
         login_id = st.text_input("ログインID (メールアドレス)")
         password = st.text_input("パスワード", type="password")
@@ -124,7 +215,8 @@ if not st.session_state.logged_in:
                 else: st.error("認証には成功しましたが、スタッフ権限（役職）が設定されていません。")
             except Exception as e:
                 st.error("メールアドレスまたはパスワードが間違っています。")
-    st.stop()
+
+    st.stop() # ログインしていない場合はここで画面の描画を止める
 
 # ==========================================
 # 5. ヘッダー
@@ -166,7 +258,7 @@ if 'active_tab' not in st.session_state or st.session_state.active_tab not in ta
 selected_tab = st.radio("メニュー", tab_options, horizontal=True, label_visibility="collapsed", key="active_tab")
 st.markdown("---")
 
-# ==========================================
+## ==========================================
 # 【TAB 1】選手名簿管理 (List / Detail)
 # ==========================================
 if selected_tab == "📋 選手名簿管理":
@@ -174,13 +266,18 @@ if selected_tab == "📋 選手名簿管理":
         st.header("📋 選手名簿一覧")
         
         col_filter, col_btn = st.columns([3, 1])
-        if st.session_state.user_role == 'coach':
-            selected_category = st.session_state.assigned_category
-            with col_filter: st.info(f"あなたの担当カテゴリ（{selected_category}）のみ表示しています。")
-        else:
-            with col_filter:
-                cat_options = ["すべて", "U-6", "U-7", "U-8", "U-9", "U-10", "U-11", "U-12", "U-13", "U-14", "U-15", "U-18", "トップ"]
-                selected_category = st.selectbox("カテゴリで絞り込み", options=cat_options)
+        with col_filter:
+            if st.session_state.user_role == 'coach':
+                selected_category = st.session_state.assigned_category
+                st.info(f"あなたの担当カテゴリ（{selected_category}）のみ表示しています。")
+                selected_status = st.selectbox("🚥 ステータスで絞り込み", ["すべて", "申請中", "在籍", "休会", "退会", "特待"])
+            else:
+                f_col1, f_col2 = st.columns(2)
+                with f_col1:
+                    cat_options = ["すべて", "U-6", "U-7", "U-8", "U-9", "U-10", "U-11", "U-12", "U-13", "U-14", "U-15", "U-18", "トップ", "社会人"]
+                    selected_category = st.selectbox("🏷️ カテゴリで絞り込み", options=cat_options)
+                with f_col2:
+                    selected_status = st.selectbox("🚥 ステータスで絞り込み", ["すべて", "申請中", "在籍", "休会", "退会", "特待"])
         
         with col_btn:
             st.write("")
@@ -198,7 +295,9 @@ if selected_tab == "📋 選手名簿管理":
                 df_m = pd.merge(df_m, unpaid_sum, on='id', how='left').fillna({'unpaid_sum': 0})
             else: df_m['unpaid_sum'] = 0
 
+            # 🌟 カテゴリとステータスのダブル絞り込み
             if selected_category != "すべて": df_m = df_m[df_m['category'] == selected_category]
+            if selected_status != "すべて": df_m = df_m[df_m['status'] == selected_status]
                 
             if not df_m.empty:
                 df_m['選手名'] = df_m['last_name'] + ' ' + df_m['first_name']
@@ -272,7 +371,11 @@ if selected_tab == "📋 選手名簿管理":
                 calc_age, calc_cat = calculate_age_and_category(m_dob)
                 
             col_m3, col_m4, col_m5 = st.columns(3)
-            with col_m3: m_status = st.selectbox("ステータス", ["在籍", "休会", "退会", "特待"], index=["在籍", "休会", "退会", "特待"].index(target_member.get('status', '在籍')) if target_member.get('status') else 0)
+            with col_m3: 
+                status_list = ["申請中", "在籍", "休会", "退会", "特待"]
+                current_status = target_member.get('status', '申請中')
+                idx = status_list.index(current_status) if current_status in status_list else 0
+                m_status = st.selectbox("ステータス", status_list, index=idx)
             with col_m4: m_join = st.date_input("入会日 (請求開始月の判定用)", value=datetime.strptime(target_member['join_date'], '%Y-%m-%d').date() if target_member.get('join_date') else date.today())
             with col_m5: m_leave = st.date_input("休会・退会日 (請求停止月の判定用)", value=datetime.strptime(target_member['leave_date'], '%Y-%m-%d').date() if target_member.get('leave_date') else None)
                 
@@ -399,15 +502,13 @@ if selected_tab == "📋 選手名簿管理":
                             st.success("新規選手の登録が完了しました！")
 
                         # ==========================================
-                        # 🌟 既存データの更新処理（★ここに排他制御を追加！）
+                        # 🌟 既存データの更新処理（★排他制御あり）
                         # ==========================================
                         else:
-                            # 画面を開いた時のバージョンを取得
                             p_version = target_parent.get('version', 1)
                             a_version = target_account.get('version', 1)
                             m_version = target_member.get('version', 1)
 
-                            # 保護者の更新（バージョンが一致している時だけ更新し、バージョンを+1する）
                             p_res = supabase.table("parents").update({
                                 "name": p_name_val, "email": p_email_val, "phone": p_phone_val, 
                                 "name_2": p_name_val_2, "email_2": p_email_val_2, "phone_2": p_phone_val_2,
@@ -418,7 +519,6 @@ if selected_tab == "📋 選手名簿管理":
                                 st.error("⚠️ 保存失敗：あなたが編集している間に、他のスタッフがこの【保護者情報】を更新しました。一覧に戻って最新データを確認してください。")
                                 st.stop()
 
-                            # 口座の更新
                             a_res = supabase.table("bank_accounts").update({
                                 "bank_code": a_b_code.zfill(4), "branch_code": a_br_code.zfill(3), 
                                 "account_type": a_type.split(" ")[0], "account_number": a_num.zfill(7), 
@@ -430,7 +530,6 @@ if selected_tab == "📋 選手名簿管理":
                                 st.error("⚠️ 保存失敗：あなたが編集している間に、他のスタッフがこの【口座情報】を更新しました。一覧に戻って最新データを確認してください。")
                                 st.stop()
 
-                            # 選手の更新
                             member_payload = {
                                 "last_name": m_last, "first_name": m_first,
                                 "birthdate": str(m_dob) if m_dob else None, "category": calc_cat,
@@ -482,7 +581,6 @@ if selected_tab == "📋 選手名簿管理":
             st.markdown("---")
             with st.expander("⚠️ 危険な操作 (選手データの論理削除)"):
                 st.write("この選手データを名簿から見えなくします。（※過去の請求履歴の整合性を保つため、データはデータベース内に保存され続けます）")
-                # ★物理削除（DELETE）から論理削除（is_deleted = True）に変更
                 if st.button("🗑️ この選手を削除（退会・不可視化）する", type="primary"):
                     try:
                         mem_id = target_member['id']
