@@ -4,6 +4,8 @@ import pandas as pd
 from datetime import datetime, date
 import jaconv
 import io
+import smtplib                              # 🌟これを追加（メール動作用）
+from email.mime.text import MIMEText        # 🌟これを追加（メールの文面作成用）
 
 # ==========================================
 # 1. データベース接続設定
@@ -247,8 +249,9 @@ def get_all_data():
 
 parents_data, accounts_data, members_data, billings_data = get_all_data()
 
+# 🌟 管理者のメニューに「臨時集金・年会費」を追加
 if st.session_state.user_role == 'admin':
-    tab_options = ["📋 選手名簿管理", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理", "📊 ダッシュボード", "⚙️ アカウント設定"]
+    tab_options = ["📋 選手名簿管理", "💰 臨時集金・年会費", "💰 請求データ生成 (全銀出力)", "💳 引落結果の取込 (消込)", "⚙️ システム管理", "📊 ダッシュボード", "⚙️ アカウント設定"]
 else:
     tab_options = ["📋 選手名簿管理", "⚙️ アカウント設定"]
 
@@ -361,6 +364,7 @@ if selected_tab == "📋 選手名簿管理":
 
         with st.container():
             st.subheader("🏃 選手情報")
+            m_number = st.text_input("会員番号（既存の番号があれば入力・任意）", value=target_member.get('member_number', '')) # 🌟これを追加！
             col_m1, col_m2 = st.columns(2)
             with col_m1:
                 m_last = st.text_input("姓 ※必須", value=target_member.get('last_name', ''))
@@ -476,7 +480,7 @@ if selected_tab == "📋 選手名簿管理":
                         if m_leave and m_status == "在籍": m_status = "退会"
 
                         # ==========================================
-                        # 🌟 新規登録の処理（ここは変更なし）
+                        # 🌟 新規登録の処理
                         # ==========================================
                         if is_new:
                             if p_mode == "既存の保護者から選択": final_p_id = parent_options[sel_p_name]
@@ -490,6 +494,7 @@ if selected_tab == "📋 選手名簿管理":
                                 final_a_id = new_a.data[0]['id']
 
                             member_payload = {
+                                "member_number": m_number, # 🌟これを追加！
                                 "parent_id": final_p_id, "account_id": final_a_id,
                                 "last_name": m_last, "first_name": m_first,
                                 "birthdate": str(m_dob) if m_dob else None, "category": calc_cat,
@@ -502,7 +507,7 @@ if selected_tab == "📋 選手名簿管理":
                             st.success("新規選手の登録が完了しました！")
 
                         # ==========================================
-                        # 🌟 既存データの更新処理（★排他制御あり）
+                        # 🌟 既存データの更新処理（排他制御あり）
                         # ==========================================
                         else:
                             p_version = target_parent.get('version', 1)
@@ -531,6 +536,7 @@ if selected_tab == "📋 選手名簿管理":
                                 st.stop()
 
                             member_payload = {
+                                "member_number": m_number, # 🌟これを追加！
                                 "last_name": m_last, "first_name": m_first,
                                 "birthdate": str(m_dob) if m_dob else None, "category": calc_cat,
                                 "status": m_status, "base_monthly_fee": m_fee if is_custom else get_auto_fee(calc_cat),
@@ -598,7 +604,98 @@ if selected_tab == "📋 選手名簿管理":
                     except Exception as e:
                         st.error(f"削除中にエラーが発生しました: {e}")
 # ==========================================
-# 🌟【TAB 2】請求データ生成 (トランザクション処理対応版)
+# 【TAB 2】臨時集金・特別費用管理
+# ==========================================
+elif selected_tab == "💰 臨時集金・年会費":
+    st.header("💰 臨時集金・特別費用の登録")
+    st.write("年会費や合宿代など、基本の月会費に「上乗せ」して引き落とす費用を登録します。")
+
+    # 現在「在籍」しているメンバーだけを抽出
+    active_members = [m for m in members_data if m.get('status') == '在籍']
+    
+    # 用途に合わせてタブを分割
+    tab_bulk, tab_indiv = st.tabs(["👥 全員に一括登録 (年会費など)", "👤 個別登録 (合宿代など)"])
+
+    # ------------------------------------------
+    # ① 全員一括登録（年会費用）
+    # ------------------------------------------
+    with tab_bulk:
+        st.subheader("【一括登録】現在の在籍メンバー全員に追加")
+        st.info(f"💡 現在、ステータスが「在籍」の選手は **{len(active_members)}名** です。")
+        
+        with st.form("bulk_special_fee_form"):
+            col1, col2 = st.columns(2)
+            with col1: target_month_bulk = st.text_input("引き落とし予定月", value="2026-04", help="YYYY-MM形式で入力")
+            with col2: amount_bulk = st.number_input("金額 (円)", min_value=100, step=100, value=5000)
+            desc_bulk = st.text_input("名目", value="令和8年度 年会費")
+
+            if st.form_submit_button("🚀 在籍中の全会員に一括登録する", type="primary"):
+                if not active_members:
+                    st.warning("在籍中のメンバーがいません。")
+                else:
+                    try:
+                        # 全員分のデータを一気に作成する
+                        payloads = [{
+                            "member_id": m['id'],
+                            "billing_month": target_month_bulk,
+                            "amount": amount_bulk,
+                            "description": desc_bulk
+                        } for m in active_members]
+                        
+                        # データベースへ一括送信（バルクインサート）
+                        supabase.table("special_fees").insert(payloads).execute()
+                        st.success(f"🎉 大成功！ 在籍中の {len(active_members)} 名全員に「{desc_bulk}（{amount_bulk:,}円）」を登録しました！")
+                        st.balloons() # お祝いの風船アニメーション！
+                    except Exception as e:
+                        st.error(f"エラーが発生しました: {e}")
+
+        # ------------------------------------------
+        # ② 個別登録（合宿代・遠征費など）
+        # ------------------------------------------
+        with tab_indiv:
+            st.subheader("【個別登録】特定の選手だけに追加")
+            
+            # 🌟 追加：フォームの外でカテゴリ絞り込み（リアルタイム反映のため）
+            cat_list = ["すべて"] + sorted(list(set([m.get('category', '未定') for m in active_members])))
+            filter_cat = st.selectbox("🎯 まずカテゴリで絞り込む", options=cat_list)
+            
+            # 絞り込みを適用
+            if filter_cat != "すべて":
+                filtered_members = [m for m in active_members if m.get('category', '未定') == filter_cat]
+            else:
+                filtered_members = active_members
+            
+            # 選択用の辞書を「絞り込まれたメンバー」だけで作成
+            member_options = {f"[{m.get('category', '未定')}] {m.get('last_name', '')} {m.get('first_name', '')}": m['id'] for m in filtered_members}
+            
+            with st.form("indiv_special_fee_form"):
+                st.write(f"該当人数: {len(filtered_members)}名")
+                selected_member_names = st.multiselect("対象の選手を選択 (複数可)", options=list(member_options.keys()))
+                
+                col3, col4 = st.columns(2)
+                with col3: target_month_indiv = st.text_input("引き落とし予定月 ", value="2026-08")
+                with col4: amount_indiv = st.number_input("金額 (円) ", min_value=100, step=100, value=15000)
+                desc_indiv = st.text_input("名目 ", value="夏合宿 参加費")
+
+                if st.form_submit_button("💾 選択した選手に登録する", type="primary"):
+                    if not selected_member_names:
+                        st.error("選手を1名以上選択してください。")
+                    else:
+                        try:
+                            payloads = [{
+                                "member_id": member_options[name],
+                                "billing_month": target_month_indiv,
+                                "amount": amount_indiv,
+                                "description": desc_indiv
+                            } for name in selected_member_names]
+                            
+                            supabase.table("special_fees").insert(payloads).execute()
+                            st.success(f"🎉 選択された {len(selected_member_names)} 名に「{desc_indiv}」を登録しました！")
+                        except Exception as e:
+                            st.error(f"エラーが発生しました: {e}")
+
+# ==========================================
+# 【TAB 3】請求データ生成 (トランザクション処理対応版)
 # ==========================================
 elif selected_tab == "💰 請求データ生成 (全銀出力)":
     st.header("💰 請求データの生成（トランザクション処理）")
@@ -675,7 +772,7 @@ elif selected_tab == "💰 請求データ生成 (全銀出力)":
             )
 
 # ==========================================
-# 【TAB 3】引落結果の取込 (消込) ＋ 手動マッチング学習機能
+# 【TAB 4】引落結果の取込 (消込) ＋ 手動マッチング学習機能
 # ==========================================
 elif selected_tab == "💳 引落結果の取込 (消込)":
     st.header("💳 銀行からの引落結果の取込（自動消込）")
@@ -793,7 +890,7 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
     st.subheader("📋 消込結果・請求履歴の確認")
     if billings_data:
         df_b = pd.DataFrame(billings_data)
-        df_m = pd.DataFrame(members_data)[['id', 'last_name', 'first_name', 'category']]
+        df_m = pd.DataFrame(members_data)[['id', 'last_name', 'first_name', 'category', 'parent_id']]
         df_m['選手名'] = df_m['last_name'] + ' ' + df_m['first_name']
         
         df_disp = pd.merge(df_b, df_m, left_on='member_id', right_on='id', how='left')
@@ -820,9 +917,103 @@ elif selected_tab == "💳 引落結果の取込 (消込)":
                 st.info("指定した条件に該当するデータがありません。")
     else:
         st.info("請求履歴データがありません。")
+# ==========================================
+# 🌟 追加：未払い者への督促メール一括送信機能
+# ==========================================
+    st.divider()
+    st.subheader("✉️ 未払い者への督促メール一括送信")
+    
+    if billings_data and month_options:
+        # 現在選択されている月の「引落不能（未払）」データを再取得
+        df_unpaid_mail = df_disp[(df_disp['billing_month'] == selected_month) & (df_disp['is_paid'] == False)].copy()
+        
+        if df_unpaid_mail.empty:
+            st.success(f"🎉 {selected_month} の未払い者はいません！メール送信は不要です。")
+        else:
+            st.warning(f"⚠️ {selected_month} の引落不能者が {len(df_unpaid_mail)} 名います。")
+            
+            # メール文面のテンプレート（スタッフが画面で編集可能）
+            default_body = f"""保護者様
+
+平素よりブリオベッカ浦安市川の活動にご理解とご協力をいただき、誠にありがとうございます。
+
+{selected_month}月分の月会費等（ご請求額：{{amount}}円）につきまして、
+ご指定の口座よりお引き落としができませんでした。
+
+誠に恐れ入りますが、下記のクラブ指定口座へお振込みをお願い申し上げます。
+（※振込手数料はご負担をお願いいたします）
+
+【お振込先】
+〇〇銀行 〇〇支店
+普通 1234567
+ブリオベッカウラヤス
+
+行き違いで既にお振込みいただいている場合は、何卒ご容赦ください。
+ご不明な点がございましたら、事務局までお問い合わせください。
+
+-----------------------------------
+ブリオベッカ浦安市川 事務局
+Email: info@example.com
+-----------------------------------"""
+
+            with st.form("mail_send_form"):
+                st.write("以下の文面で対象者に一括メールを送信します。（内容は自由に編集できます）")
+                mail_body = st.text_area("メール本文（{amount}の部分は自動で各選手の請求額に置き換わります）", value=default_body, height=300)
+                
+                # 安全装置（テストモード）
+                st.markdown("---")
+                is_test_mode = st.checkbox("🔧 テスト送信モード（チェックを入れると、保護者ではなく自分のシステム用アドレス宛にのみ送信されます）", value=True)
+                
+                submit_mail = st.form_submit_button("🚀 メールを送信する", type="primary")
+                
+                if submit_mail:
+                    try:
+                        smtp_server = st.secrets["SMTP_SERVER"]
+                        smtp_port = st.secrets["SMTP_PORT"]
+                        smtp_user = st.secrets["SMTP_USER"]
+                        smtp_pass = st.secrets["SMTP_PASS"]
+                        
+                        success_mail_count = 0
+                        
+                        with st.spinner("メールを送信中..."):
+                            # SMTPサーバーに接続
+                            server = smtplib.SMTP(smtp_server, smtp_port)
+                            server.starttls()
+                            server.login(smtp_user, smtp_pass)
+                            
+                            for idx, row in df_unpaid_mail.iterrows():
+                                # 保護者のメールアドレスを取得
+                                target_p = next((p for p in parents_data if p['id'] == row['parent_id']), None)
+                                if not target_p or not target_p.get('email'):
+                                    continue
+                                
+                                to_email = smtp_user if is_test_mode else target_p['email']
+                                personalized_body = mail_body.replace("{amount}", f"{int(row['total_amount']):,}")
+                                
+                                msg = MIMEText(personalized_body)
+                                msg['Subject'] = f"【重要】{selected_month}月分 会費のお引き落としについて"
+                                msg['From'] = f"ブリオベッカ浦安市川 事務局 <{smtp_user}>"
+                                msg['To'] = to_email
+                                
+                                server.send_message(msg)
+                                success_mail_count += 1
+                                
+                                # テストモードの場合は1通でストップ
+                                if is_test_mode: break
+                                
+                            server.quit()
+                            
+                        if is_test_mode:
+                            st.success(f"✅ テスト送信完了: システム用アドレス（{smtp_user}）宛に1通だけサンプルを送信しました。文面を確認してください。")
+                        else:
+                            st.success(f"🎉 本番送信完了: 対象の保護者 {success_mail_count} 名にメールを一括送信しました！")
+                            st.balloons()
+                            
+                    except Exception as e:
+                        st.error(f"メールの送信に失敗しました。設定（secrets.toml）やネットワークを確認してください。詳細: {e}")
 
 # ==========================================
-# 【TAB 4】システム管理 (入出力・年度更新)
+# 【TAB 5】システム管理 (入出力・年度更新)
 # ==========================================
 elif selected_tab == "⚙️ システム管理":
     st.header("⚙️ システム管理・データ入出力")
@@ -887,6 +1078,7 @@ elif selected_tab == "⚙️ システム管理":
         df_export = pd.merge(df_export, df_a_exp, left_on='account_id', right_on='id', suffixes=('', '_account'))
         
         export_columns = {
+            'member_number': '会員番号', # 🌟これを追加！
             'last_name': '選手姓', 'first_name': '選手名', 'birthdate': '生年月日', 
             'category': 'カテゴリ', 'status': 'ステータス', 'base_monthly_fee': '基本月会費', 'is_custom_fee': '手動料金フラグ',
             'join_date': '入会日', 'leave_date': '退会日',
@@ -958,6 +1150,7 @@ elif selected_tab == "⚙️ システム管理":
                         join_raw, leave_raw = get_val('入会日'), get_val('退会日')
                         
                         member_payload = {
+                            "member_number": get_val('会員番号'),
                             "parent_id": final_p_id, "account_id": final_a_id,
                             "birthdate": dob_val, "category": calc_cat,
                             "status": get_val('ステータス') or '在籍', "base_monthly_fee": fee_val,
@@ -998,7 +1191,7 @@ elif selected_tab == "⚙️ システム管理":
             st.error("エラーが発生しました。")
 
 # ==========================================
-# 【TAB 5】ダッシュボード (経営分析)
+# 【TAB 6】ダッシュボード (経営分析)
 # ==========================================
 elif selected_tab == "📊 ダッシュボード":
     st.header("📊 クラブ経営・分析ダッシュボード")
@@ -1045,7 +1238,7 @@ elif selected_tab == "📊 ダッシュボード":
                 st.bar_chart(cat_sales.set_index('カテゴリ'), use_container_width=True)
 
 # ==========================================
-# 【TAB 6】アカウント設定 (パスワード変更)
+# 【TAB 7】アカウント設定 (パスワード変更)
 # ==========================================
 elif selected_tab == "⚙️ アカウント設定":
     st.header("⚙️ アカウント設定")
